@@ -1,160 +1,293 @@
 #!/usr/bin/env python3
-"""THE WORLD — 23 November 2026.
+"""THE WORLD - front page for Monday 23 November 2026.
 
-make.fun bounty: "Sum up 23 November's world news in one image".
-Renders a one-page broadsheet-style news summary as PNG, fully offline
-and deterministic: no network, no clock, no randomness. stdlib + Pillow only.
-
-Run:  python3 main.py            -> writes world-23-nov-2026.png
-Test:  python3 main.py --check   -> renders twice, asserts byte-identical output
+Pure standard library: a hand-written 5x7 bitmap font, an RGB pixel buffer and a
+hand-written PNG encoder (struct + zlib). Deterministic, no network, no clock.
 """
-import hashlib
-import sys
-from PIL import Image, ImageDraw, ImageFont
+import os
+import struct
+import zlib
 
-DATE = "Monday, 23 November 2026"
-OUT = "world-23-nov-2026.png"
-W, H = 1600, 2200
-PAPER = (250, 247, 238)
-INK = (18, 18, 18)
-ACCENT = (158, 27, 27)
-MUTED = (90, 88, 82)
-RULE = (180, 175, 162)
+W = H = 1024
+PAPER = (244, 239, 226)
+INK = (20, 18, 16)
+RED = (158, 22, 28)
+GREY = (92, 88, 80)
 
-SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
-SERIF_B = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# ---------------------------------------------------------------- font ----
+_G = {}
 
 
-def font(path, size):
-    return ImageFont.truetype(path, size)
+def _def(ch, *rows):
+    _G[ch] = rows
 
 
-def wrap(draw, text, fnt, width):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        t = (cur + " " + w).strip()
-        if draw.textlength(t, font=fnt) <= width:
+_def("A", ".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#")
+_def("B", "####.", "#...#", "#...#", "####.", "#...#", "#...#", "####.")
+_def("C", ".###.", "#...#", "#....", "#....", "#....", "#...#", ".###.")
+_def("D", "####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####.")
+_def("E", "#####", "#....", "#....", "####.", "#....", "#....", "#####")
+_def("F", "#####", "#....", "#....", "####.", "#....", "#....", "#....")
+_def("G", ".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###.")
+_def("H", "#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#")
+_def("I", ".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###.")
+_def("J", "..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##..")
+_def("K", "#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#")
+_def("L", "#....", "#....", "#....", "#....", "#....", "#....", "#####")
+_def("M", "#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#")
+_def("N", "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#")
+_def("O", ".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###.")
+_def("P", "####.", "#...#", "#...#", "####.", "#....", "#....", "#....")
+_def("Q", ".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#")
+_def("R", "####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#")
+_def("S", ".####", "#....", "#....", ".###.", "....#", "....#", "####.")
+_def("T", "#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#..")
+_def("U", "#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###.")
+_def("V", "#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#..")
+_def("W", "#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#")
+_def("X", "#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#")
+_def("Y", "#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#..")
+_def("Z", "#####", "....#", "...#.", "..#..", ".#...", "#....", "#####")
+_def("0", ".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###.")
+_def("1", "..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###.")
+_def("2", ".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####")
+_def("3", "####.", "....#", "....#", ".###.", "....#", "....#", "####.")
+_def("4", "...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#.")
+_def("5", "#####", "#....", "####.", "....#", "....#", "#...#", ".###.")
+_def("6", ".###.", "#....", "#....", "####.", "#...#", "#...#", ".###.")
+_def("7", "#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#...")
+_def("8", ".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###.")
+_def("9", ".###.", "#...#", "#...#", ".####", "....#", "....#", ".###.")
+_def(".", ".....", ".....", ".....", ".....", ".....", ".##..", ".##..")
+_def(",", ".....", ".....", ".....", ".....", ".##..", ".##..", ".#...")
+_def(";", ".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#...")
+_def(":", ".....", ".##..", ".##..", ".....", ".##..", ".##..", ".....")
+_def("!", "..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#..")
+_def("?", ".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#..")
+_def("'", "..#..", "..#..", ".#...", ".....", ".....", ".....", ".....")
+_def("-", ".....", ".....", ".....", "#####", ".....", ".....", ".....")
+_def("(", "...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#.")
+_def(")", ".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#...")
+_def("%", "##..#", "##..#", "...#.", "..#..", ".#...", "#..##", "#..##")
+_def("&", ".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#")
+_def("/", "....#", "....#", "...#.", "..#..", ".#...", "#....", "#....")
+_def("·", ".....", ".....", ".....", "..#..", ".....", ".....", ".....")
+_def(" ", *["....."] * 7)
+
+# ------------------------------------------------------------- canvas -----
+buf = bytearray(bytes(PAPER) * (W * H))
+
+
+def rect(x, y, w, h, col):
+    x0, x1 = max(0, x), min(W, x + w)
+    y0, y1 = max(0, y), min(H, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return
+    row = bytes(col) * (x1 - x0)
+    for yy in range(y0, y1):
+        o = (yy * W + x0) * 3
+        buf[o:o + len(row)] = row
+
+
+def text_w(s, sc):
+    return len(s) * 6 * sc - sc if s else 0
+
+
+def text(x, y, s, sc, col=INK, bold=False):
+    """Draw upper-cased text; return x after the last glyph."""
+    for ch in s.upper():
+        g = _G.get(ch, _G["?"])
+        for r, row in enumerate(g):
+            c = 0
+            while c < 5:
+                if row[c] == "#":
+                    c2 = c
+                    while c2 < 5 and row[c2] == "#":
+                        c2 += 1
+                    rect(x + c * sc, y + r * sc, (c2 - c) * sc + (1 if bold else 0) * max(1, sc // 2),
+                         sc, col)
+                    c = c2
+                else:
+                    c += 1
+        x += 6 * sc
+    return x - sc
+
+
+def wrap(s, sc, width):
+    maxc = (width + sc) // (6 * sc)
+    lines, cur = [], ""
+    for word in s.split():
+        t = word if not cur else cur + " " + word
+        if len(t) <= maxc:
             cur = t
         else:
             lines.append(cur)
-            cur = w
+            cur = word
     if cur:
         lines.append(cur)
     return lines
 
 
-def story_block(draw, x, y, w, tag, headline, body, head_size=40, body_size=27):
-    hf, bf, tf = font(SERIF_B, head_size), font(SERIF, body_size), font(SANS_B, 24)
-    # category tag
-    tw = draw.textlength(tag, font=tf) + 24
-    draw.rounded_rectangle([x, y, x + tw, y + 36], radius=4, fill=ACCENT)
-    draw.text((x + 12, y + 5), tag, font=tf, fill=(255, 255, 255))
-    y += 52
-    for ln in wrap(draw, headline, hf, w):
-        draw.text((x, y), ln, font=hf, fill=INK)
-        y += head_size + 8
-    y += 6
-    for ln in wrap(draw, body, bf, w):
-        draw.text((x, y), ln, font=bf, fill=(52, 50, 46))
-        y += body_size + 9
+def para(x, y, s, sc, width, col=INK, bold=False, lead=None):
+    lead = lead or 8 * sc + max(1, sc // 2)
+    for ln in wrap(s, sc, width):
+        text(x, y, ln, sc, col, bold)
+        y += lead
     return y
 
 
-def render():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    m = 80  # margin
-    # ---- masthead ----
-    d.text((m, 48), "THE WORLD", font=font(SERIF_B, 118), fill=INK)
-    d.text((m, 178), "IN ONE PAGE", font=font(SANS_B, 34), fill=ACCENT)
-    d.text((W - m - d.textlength(DATE, font=font(SANS_B, 34)), 186),
-           DATE, font=font(SANS_B, 34), fill=INK)
-    d.line([(m, 240), (W - m, 240)], fill=INK, width=4)
-    d.line([(m, 248), (W - m, 248)], fill=INK, width=1)
+def para_h(s, sc, width, lead=None):
+    lead = lead or 8 * sc + max(1, sc // 2)
+    return len(wrap(s, sc, width)) * lead
 
-    y = 280
-    # ---- hero: Nvidia ----
-    y = story_block(
-        d, m, y, W - 2 * m, "TECH  ·  LEAD",
+
+def tag(x, y, s, sc):
+    """Red chip with paper-coloured text; returns chip width."""
+    w = text_w(s, sc) + 4 * sc
+    rect(x, y, w, tag_h(sc), RED)
+    text(x + 2 * sc, y + sc, s, sc, PAPER, True)
+    return w
+
+
+def tag_h(sc):
+    return 9 * sc
+
+
+# ------------------------------------------------------------ content -----
+HERO = ("TECH - LEAD",
         "Nvidia brings back Jensen Huang as chief executive",
         "The board reinstated Huang with immediate effect in an extraordinary "
-        "reversal under pressure from President Donald Trump, after revelations "
-        "about the chief executive's private life. Shares jumped about 30% on "
-        "the news, capping one of the strangest leadership sagas in tech.",
-        head_size=56, body_size=30)
-    d.line([(m, y + 18), (W - m, y + 18)], fill=RULE, width=2)
-    y += 44
+        "reversal under pressure from President Donald Trump. Shares jumped "
+        "about 30% on the news.")
 
-    # ---- two-column grid, 8 stories ----
-    col_w = (W - 2 * m - 40) // 2
-    left = [
-        ("WAR", "Ukraine says its sea drones sank a Russian warship off Libya",
-         "President Zelenskyy hailed an \u201cexemplary operation\u201d after Kyiv "
-         "confirmed the strike. A Russian cargo ship was also hit in the Baltic."),
-        ("CLIMATE", "COP31 collapses with no deal on fossil fuels",
-         "The UN climate summit ended without an approved agreement after the "
-         "draft text dropped language on moving away from fossil fuels."),
-        ("USA", "Democrats take largest House majority since 1992",
-         "Democrat Chuck Hubbard unseated Republican Virginia Foxx in North "
-         "Carolina, sealing the biggest Democratic House majority in 34 years."),
-        ("SPORT", "2031 Women's World Cup goes to four hosts",
-         "FIFA approved a joint bid from the United States, Mexico, Costa Rica "
-         "and Jamaica. The UK was confirmed as host of the 2035 edition."),
-    ]
-    right = [
-        ("USA", "Democrats fire starting gun on the 2028 White House race",
-         "Party officials revealed details of the 2028 presidential primary "
-         "schedule a year after midterm victories."),
-        ("UK  ·  EUROPE", "Burnham defends EU reset deal in the Commons",
-         "The prime minister defended the new agreement with the EU, promising "
-         "\u201cno banging on about Europe\u201d, as MPs pressed him on a referendum."),
-        ("MARKETS", "Bitcoin rebounds from a two-year low",
-         "Bitcoin bounced back after a weekend plunge to its lowest in two "
-         "years, its second-longest losing streak on record, as Wall Street "
-         "futures recovered."),
-        ("MIDDLE EAST  ·  ASIA", "Houthis claim strike on Saudi oil refinery",
-         "Yemen's Houthi rebels said they attacked a major refinery on Saudi "
-         "Arabia's Red Sea coast. Bangladesh vowed to arrest Sheikh Hasina if "
-         "she returns from India in December."),
-    ]
-    ly = ry = y
-    for tag, head, body in left:
-        ly = story_block(d, m, ly, col_w, tag, head, body) + 34
-    for tag, head, body in right:
-        ry = story_block(d, m + col_w + 40, ry, col_w, tag, head, body) + 34
-    y = max(ly, ry)
-    d.line([(m, y), (W - m, y)], fill=RULE, width=2)
+STORIES = [
+    ("WAR", "Ukraine says its sea drones sank a Russian warship off Libya",
+     "Zelenskyy hailed an 'exemplary operation'; a Russian cargo ship was also hit in the Baltic."),
+    ("CLIMATE", "COP31 collapses with no deal on fossil fuels",
+     "The UN summit ended with no approved agreement after the draft dropped fossil-fuel phase-out language."),
+    ("USA", "Democrats take largest House majority since 1992",
+     "Chuck Hubbard unseated Virginia Foxx in North Carolina, sealing the biggest majority in 34 years."),
+    ("USA", "Democrats fire starting gun on the 2028 White House race",
+     "Party officials revealed details of the 2028 presidential primary schedule."),
+    ("UK - EUROPE", "Burnham defends EU reset deal in the Commons",
+     "The prime minister promised 'no banging on about Europe' as MPs pressed him on a referendum."),
+    ("MARKETS", "Bitcoin rebounds from a two-year low",
+     "Bitcoin bounced after a weekend plunge to its lowest in two years as Wall Street futures recovered."),
+    ("MIDDLE EAST - ASIA", "Houthis claim strike on Saudi oil refinery",
+     "Rebels said they hit a major refinery on the Red Sea coast. Bangladesh vowed to arrest Sheikh Hasina if she returns."),
+    ("SPORT", "2031 Women's World Cup goes to four hosts",
+     "FIFA approved the joint US, Mexico, Costa Rica and Jamaica bid; the UK was confirmed as host for 2035."),
+]
 
-    # ---- footer ----
-    fy = y + 22
-    for ln in wrap(d, "Also on 23 November: flights grounded in Belgium as workers "
-                   "strike over austerity  ·  dozens still missing after an "
-                   "Indonesia candy-factory fire  ·  Iran warns of a response to "
-                   "any attack amid a naval blockade.",
-                   font(SERIF, 25), W - 2 * m):
-        d.text((m, fy), ln, font=font(SERIF, 25), fill=MUTED)
-        fy += 34
-    d.text((m, H - 78), "Sources: BBC, Al Jazeera, Daily Mirror, Economic Times, "
-           "CoinDesk.", font=font(SANS, 22), fill=MUTED)
-    d.text((W - m - d.textlength("THE WORLD — 23 NOV 2026", font=font(SANS_B, 22)), H - 78),
-           "THE WORLD — 23 NOV 2026", font=font(SANS_B, 22), fill=MUTED)
-    return img
+FOOTER = ("Also on 23 November: flights grounded in Belgium as workers strike over "
+          "austerity · dozens missing after an Indonesia candy-factory fire · "
+          "Iran warns of a response to any attack amid a naval blockade.")
+SOURCES = "Sources: BBC, Al Jazeera, Daily Mirror, Economic Times, CoinDesk."
+
+# ------------------------------------------------------------- layout -----
+M = 24
+CW = W - 2 * M
+
+
+def build():
+    # masthead
+    s = 7
+    mw = text_w("THE WORLD", s)
+    text(M + (CW - mw) // 2, 10, "THE WORLD", s, INK, True)
+    rect(M, 68, CW, 4, INK)
+    rect(M, 75, CW, 2, INK)
+    # date band
+    rect(M, 82, CW, 46, RED)
+    d = "MONDAY 23 NOVEMBER 2026"
+    ds = 5
+    dw = text_w(d, ds)
+    text(M + (CW - dw) // 2, 82 + (46 - 7 * ds) // 2, d, ds, PAPER, True)
+
+    # hero
+    y = 138
+    tag(M, y, HERO[0], 3)
+    y += tag_h(3) + 10
+    hs = 5
+    y = para(M, y, HERO[1], hs, CW, INK, True, lead=8 * hs + 3)
+    y += 4
+    y = para(M, y, HERO[2], 3, CW, INK, False, lead=8 * 3 + 1)
+    y += 6
+    rect(M, y, CW, 4, RED)
+    y += 10
+
+    # grid
+    gap = 28
+    colw = (CW - gap) // 2
+    hsz, ssz = 3, 2
+    top = y
+    rows = [STORIES[i:i + 2] for i in range(0, 8, 2)]
+    flines = len(wrap(FOOTER, 2, CW - 16))
+    fh = 8 + flines * 16 + 4 + 14 + 8          # strip height from its content
+    footer_top = H - 8 - fh                    # strip ends 8 px above the edge
+    # measure
+    heights = []
+    for pair in rows:
+        h = 0
+        for (t, hd, sm) in pair:
+            hh = tag_h(2) + 4 + para_h(hd, hsz, colw, 8 * hsz) + 4 + para_h(sm, ssz, colw, 8 * ssz + 1)
+            h = max(h, hh)
+        heights.append(h)
+    total = sum(heights)
+    pad = (footer_top - 14 - top - total) // (len(rows) - 1)  # even spacing between rows
+    for ri, pair in enumerate(rows):
+        for ci, (t, hd, sm) in enumerate(pair):
+            x = M + ci * (colw + gap)
+            yy = y
+            tag(x, yy, t, 2)
+            yy += tag_h(2) + 4
+            yy = para(x, yy, hd, hsz, colw, INK, True, lead=8 * hsz)
+            yy += 4
+            yy = para(x, yy, sm, ssz, colw, GREY if False else INK, False, lead=8 * ssz + 1)
+        y += heights[ri]
+        if ri < len(rows) - 1:
+            y += pad // 2
+            rect(M, y, CW, 2, INK)
+            y += pad - pad // 2
+    # vertical divider
+    rect(M + colw + gap // 2 - 1, top, 2, y - top, INK)
+    grid_end = y
+
+    # footer strip
+    fy = footer_top
+    rect(M, fy - 6, CW, 4, INK)
+    rect(M, fy, CW, fh, INK)
+    fy2 = para(M + 8, fy + 8, FOOTER, 2, CW - 16, PAPER, False, lead=16)
+    text(M + 8, fy2 + 4, SOURCES, 2, (214, 204, 184), False)
+    return grid_end, fy + fh
+
+
+# ---------------------------------------------------------------- png -----
+def png_bytes():
+    raw = bytearray()
+    stride = W * 3
+    for yy in range(H):
+        raw.append(0)
+        raw += buf[yy * stride:(yy + 1) * stride]
+    comp = zlib.compress(bytes(raw), 9)
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", comp)
+            + chunk(b"IEND", b""))
 
 
 def main():
-    img = render()
-    img.save(OUT)
-    if "--check" in sys.argv:
-        img2 = render()
-        img2.save("/tmp/world-check.png")
-        h1 = hashlib.sha256(open(OUT, "rb").read()).hexdigest()
-        h2 = hashlib.sha256(open("/tmp/world-check.png", "rb").read()).hexdigest()
-        assert h1 == h2, "non-deterministic render!"
-        print(f"OK deterministic  sha256={h1[:16]}…  {OUT}  {W}x{H}")
-    else:
-        print(f"wrote {OUT}  {W}x{H}")
+    ge, fe = build()
+    out = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+    os.makedirs(out, exist_ok=True)
+    path = os.path.join(out, "entry.png")
+    with open(path, "wb") as f:
+        f.write(png_bytes())
+    os.chmod(path, 0o644)
 
 
 if __name__ == "__main__":
